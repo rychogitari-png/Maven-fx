@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Maven FX - Signals & Sound Alerts</title>
+<link rel="manifest" href="manifest.json">
+<style>
+body { background: #0d1117; color: #e6edf3; font-family: Arial; text-align: center; padding: 20px; }
+.container { max-width: 500px; margin: auto; background: #161b22; padding: 20px; border-radius: 10px; }
+select, button { width: 100%; padding: 10px; margin-top: 10px; border-radius: 5px; border: none; font-size: 16px; }
+button { background: #238636; color: white; cursor: pointer; }
+.status { margin-top: 15px; font-weight: bold; }
+#stream { margin-top: 15px; background: #0d1117; padding: 10px; border-radius: 5px; height: 80px; overflow-x: auto; white-space: nowrap; font-size: 20px; letter-spacing: 3px; }
+.prob, .signal { margin-top: 15px; font-size: 18px; }
+.signal { font-weight: bold; font-size: 20px; }
+.signal.over { color: yellow; animation: blink 1s infinite; }
+.signal.under { color: orange; animation: blink 1s infinite; }
+.signal.enter.over { color: lime; animation: blink 0.5s infinite; }
+.signal.enter.under { color: red; animation: blink 0.5s infinite; }
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+</style>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('service-worker.js')
+    .then(() => console.log('Service Worker registered'))
+    .catch(err => console.log('SW registration failed', err));
+}
+</script>
+</head>
+<body>
+<div class="container">
+<h2>Maven FX - Signals & Sound Alerts</h2>
+<select id="market">
+  <option value="R_10">Volatility 10 Index</option>
+  <option value="R_25">Volatility 25 Index</option>
+  <option value="R_50">Volatility 50 Index</option>
+  <option value="R_75">Volatility 75 Index</option>
+  <option value="R_100">Volatility 100 Index</option>
+  <option value="1HZ10V">Volatility 10 (1s)</option>
+  <option value="1HZ25V">Volatility 25 (1s)</option>
+  <option value="1HZ50V">Volatility 50 (1s)</option>
+  <option value="1HZ75V">Volatility 75 (1s)</option>
+  <option value="1HZ100V">Volatility 100 (1s)</option>
+  <option value="JD10">Jump 10</option>
+  <option value="JD25">Jump 25</option>
+  <option value="JD50">Jump 50</option>
+  <option value="JD75">Jump 75</option>
+  <option value="JD100">Jump 100</option>
+</select>
+<button onclick="connect()">Connect</button>
+<div class="status" id="status">Disconnected</div>
+<h3>Last Price: <span id="price">-</span></h3>
+<h3>Last Digit: <span id="digit">-</span></h3>
+<div class="prob">
+Over 1: <span id="over">0%</span><br>
+Under 8: <span id="under">0%</span>
+</div>
+<div class="signal" id="signal">WAIT</div>
+<div id="stream"></div>
+</div>
+
+<script>
+let ws;
+let digits = [];
+let counts = Array(10).fill(0);
+const maxDigits = 100;
+let tickWait = false;
+let lastSignal = "";
+let audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+function playBeep(type) {
+  const oscillator = audioCtx.createOscillator();
+  const gainNode = audioCtx.createGain();
+  oscillator.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+  oscillator.frequency.value = (type==="over")?900:400;
+  oscillator.type="sine";
+  gainNode.gain.value=0.1;
+  oscillator.start();
+  oscillator.stop(audioCtx.currentTime+0.15);
+}
+
+function connect(){
+  if(audioCtx.state==='suspended'){audioCtx.resume();}
+  const market=document.getElementById("market").value;
+  const status=document.getElementById("status");
+  if(ws) ws.close();
+  digits=[];
+  counts.fill(0);
+  document.getElementById("stream").innerText="";
+  tickWait=false;
+  lastSignal="";
+  status.innerText="Connecting...";
+  ws=new WebSocket("wss://ws.binaryws.com/websockets/v3?app_id=1089");
+  ws.onopen=()=>{status.innerText="Connected to "+market; ws.send(JSON.stringify({ticks:market,subscribe:1}));};
+  ws.onmessage=(msg)=>{const data=JSON.parse(msg.data);if(data.tick){const price=data.tick.quote;const lastDigit=parseInt(price.toString().slice(-1));document.getElementById("price").innerText=price;document.getElementById("digit").innerText=lastDigit;updateDigits(lastDigit);calculateProbability();analyzeMarket();}};
+  ws.onerror=()=>status.innerText="Error connecting";
+  ws.onclose=()=>status.innerText="Disconnected";
+}
+
+function updateDigits(digit){
+  const stream=document.getElementById("stream");
+  digits.push(digit);
+  counts[digit]++;
+  if(digits.length>maxDigits){const old=digits.shift();counts[old]--;}
+  if(digits.length%5===0){stream.innerText=digits.join(" ");}
+}
+
+function calculateProbability(){
+  const total=digits.length||1;
+  const overProb=counts.slice(2,10).reduce((a,b)=>a+b,0)/total*100;
+  const underProb=counts.slice(0,8).reduce((a,b)=>a+b,0)/total*100;
+  document.getElementById("over").innerText=overProb.toFixed(1)+"%";
+  document.getElementById("under").innerText=underProb.toFixed(1)+"%";
+  return {overProb,underProb};
+}
+
+function analyzeMarket(){
+  const signal=document.getElementById("signal");
+  if(digits.length<15){signal.innerText="⏳ WAIT (Collecting data)";signal.className="signal";tickWait=false;lastSignal="";return;}
+  const {overProb,underProb}=calculateProbability();
+  const overSignal=overProb>=80;
+  const underSignal=underProb>=80;
+  if(tickWait){
+    if(overSignal){signal.innerText=`🚀 OVER 1 → ENTER NOW (${overProb.toFixed(1)}%)`;signal.className="signal enter over";if(lastSignal!=="over"){playBeep("over");lastSignal="over";}}
+    else if(underSignal){signal.innerText=`🔥 UNDER 8 → ENTER NOW (${underProb.toFixed(1)}%)`;signal.className="signal enter under";if(lastSignal!=="under"){playBeep("under");lastSignal="under";}}
+    else{signal.innerText="⏳ WAIT";signal.className="signal";lastSignal="";}
+    tickWait=false;
+    return;
+  }
+  if(overSignal){signal.innerText=`🚀 OVER 1 SETUP → WAIT 1 TICK (${overProb.toFixed(1)}%)`;signal.className="signal over";tickWait=true;}
+  else if(underSignal){signal.innerText=`🔥 UNDER 8 SETUP → WAIT 1 TICK (${underProb.toFixed(1)}%)`;signal.className="signal under";tickWait=true;}
+  else{signal.innerText="⏳ WAIT";signal.className="signal";tickWait=false;lastSignal="";}
+}
+</script>
+</body>
+</html>
